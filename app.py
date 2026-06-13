@@ -1,6 +1,6 @@
 # heat_analysis_system/app.py
 # [Раздел 2.1 - 2.3 Диплома] Streamlit UI Дашборд и сквозной аналитический конвейер
-# Максимальная сборка: Сравнение МКД, Симулятор нагрузок, Управление СУБД и Настройка ГСОП
+# Сборка с тотальной русификацией всех элементов графиков Plotly (оси, легенды, подсказки)
 
 import os
 import yaml
@@ -16,6 +16,7 @@ from src.preprocessing import DataPreprocessingPipeline
 from src.models import RobustHeatModel
 from src.anomaly import EWMAAnomalyDetector
 from src.classifier import BuildingClassifier
+from src.forecast import ShortTermHeatForecaster
 
 st.set_page_config(layout="wide", page_title="Платформа Анализа Теплопотребления МКД")
 
@@ -33,7 +34,7 @@ with open("config/config.yaml", "r", encoding="utf-8") as f:
 Session = init_db(cfg['paths']['database_uri'])
 
 # ====================================================================
-# УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ГЕНЕРАЦИИ PDF-ОТЧЕТА
+# УНИВЕРСАЛЬНАЯ ФУНКЦИЯ ГЕНЕРАЦИИ PDF-ОТЧЕТА (БЕЗ ОШИБОК ЭНКОДИНГА)
 # ====================================================================
 def generate_pdf_bytes(file_name, status, r2, beta_0, beta_1, recommendations, tech_lines):
     pdf = FPDF(orientation='P', unit='mm', format='A4')
@@ -73,7 +74,11 @@ def generate_pdf_bytes(file_name, status, r2, beta_0, beta_1, recommendations, t
         pdf.ln(2)
         
     raw_output = pdf.output(dest='S')
-    return raw_output.encode('latin1') if isinstance(raw_output, str) else bytes(raw_output)
+    if isinstance(raw_output, str):
+        return raw_output.encode('latin1', errors='replace')
+    elif isinstance(raw_output, (bytes, bytearray)):
+        return bytes(raw_output)
+    return b""
 
 
 # ====================================================================
@@ -86,7 +91,8 @@ app_mode = st.sidebar.radio(
         "🔄 Проведение нового анализа", 
         "🗄️ Архив технических аудитов", 
         "📊 Сравнение объектов МКД",
-        "🔮 Симулятор тепловых нагрузок ИТП"
+        "🔮 Симулятор тепловых нагрузок ИТП",
+        "🔮 Краткосрочный прогноз Гкал"
     ]
 )
 
@@ -142,18 +148,60 @@ if app_mode == "🔄 Проведение нового анализа":
             col4.metric("Адекватность модели (Робастный R²)", f"{model_core.r2:.2%}")
 
             st.write("### 📊 Интерактивный графический анализ")
+            
+            # --- ГРАФИК 1: МОДЕЛЬ ХУБЕРА (РУСИФИКАЦИЯ) ---
             fig_huber = go.Figure()
-            fig_huber.add_trace(go.Scatter(x=df_analyzed['t_out'], y=df_analyzed['Q'], mode='markers', name='Фактические точки'))
+            fig_huber.add_trace(go.Scatter(
+                x=df_analyzed['t_out'], y=df_analyzed['Q'], 
+                mode='markers', name='Фактическое теплопотребление',
+                hovertemplate='<b>Фактическое значение</b><br>Т_ул: %{x}°C<br>Расход: %{y:.3f} Гкал/сут<extra></extra>'
+            ))
             df_sorted = df_analyzed.sort_values('t_out')
-            fig_huber.add_trace(go.Scatter(x=df_sorted['t_out'], y=df_sorted['q_pred'], mode='lines', name='Модель Хубера', line=dict(color='crimson', width=3)))
+            fig_huber.add_trace(go.Scatter(
+                x=df_sorted['t_out'], y=df_sorted['q_pred'], 
+                mode='lines', name='Базовая температурная модель (Хубер)', line=dict(color='crimson', width=3),
+                hovertemplate='<b>Модель Хубера</b><br>Т_ул: %{x}°C<br>Ожидаемый расход: %{y:.3f} Гкал/сут<extra></extra>'
+            ))
+            fig_huber.update_layout(
+                title="Зависимость теплопотребления от температуры наружного воздуха",
+                xaxis_title="Температура наружного воздуха T_ул (°C)",
+                yaxis_title="Суточный расход тепловой энергии Q (Гкал/сут)",
+                template="plotly_white",
+                legend=dict(title_text="Условные обозначения легенды:")
+            )
             st.plotly_chart(fig_huber, use_container_width=True)
 
+            # --- ГРАФИК 2: КАРТА EWMA (РУСИФИКАЦИЯ) ---
             fig_ewma = go.Figure()
-            fig_ewma.add_trace(go.Scatter(x=df_analyzed['Date'], y=df_analyzed['ewma_val'], mode='lines+markers', name='Статистика EWMA'))
-            fig_ewma.add_trace(go.Scatter(x=df_analyzed['Date'], y=df_analyzed['ewma_ucl'], mode='lines', name='UCL', line=dict(dash='dash')))
-            fig_ewma.add_trace(go.Scatter(x=df_analyzed['Date'], y=df_analyzed['ewma_lcl'], mode='lines', name='LCL', line=dict(dash='dash')))
+            fig_ewma.add_trace(go.Scatter(
+                x=df_analyzed['Date'], y=df_analyzed['ewma_val'], 
+                mode='lines+markers', name='Текущая статистика EWMA',
+                hovertemplate='Дата: %{x}<br>Показатель EWMA: %{y:.4f}<extra></extra>'
+            ))
+            fig_ewma.add_trace(go.Scatter(
+                x=df_analyzed['Date'], y=df_analyzed['ewma_ucl'], 
+                mode='lines', name='Верхний предел контроля (UCL)', line=dict(dash='dash', color='gray'),
+                hovertemplate='Верхний предел: %{y:.4f}<extra></extra>'
+            ))
+            fig_ewma.add_trace(go.Scatter(
+                x=df_analyzed['Date'], y=df_analyzed['ewma_lcl'], 
+                mode='lines', name='Нижний предел контроля (LCL)', line=dict(dash='dash', color='gray'),
+                hovertemplate='Нижний предел: %{y:.4f}<extra></extra>'
+            ))
             anomalies_points = df_analyzed[df_analyzed['is_anomaly']]
-            fig_ewma.add_trace(go.Scatter(x=anomalies_points['Date'], y=anomalies_points['ewma_val'], mode='markers', name='🚨 Выброс', marker=dict(color='red', size=10, symbol='x')))
+            fig_ewma.add_trace(go.Scatter(
+                x=anomalies_points['Date'], y=anomalies_points['ewma_val'], 
+                mode='markers', name='🚨 Зафиксированный технологический инцидент', 
+                marker=dict(color='red', size=10, symbol='x'),
+                hovertemplate='<b>Аномалия зафиксирована!</b><br>Дата: %{x}<br>Значение: %{y:.4f}<extra></extra>'
+            ))
+            fig_ewma.update_layout(
+                title="Контрольная карта EWMA для мониторинга скрытых аномалий ИТП",
+                xaxis_title="Временной период (Дата)",
+                yaxis_title="Стандартизированные остатки модели (EWMA)",
+                template="plotly_white",
+                legend=dict(title_text="Элементы карты контроля:")
+            )
             st.plotly_chart(fig_ewma, use_container_width=True)
 
             st.write("---")
@@ -197,7 +245,7 @@ if app_mode == "🔄 Проведение нового анализа":
                     </div>
                     """, unsafe_allow_html=True)
 
-            # Сохранение результатов в БД SQLite СУБД через ORM
+            # Сохранение результатов в БД SQLite
             session = Session()
             try:
                 existing_meta = session.query(BuildingMeta).filter_by(file_name=uploaded_file.name).first()
@@ -290,6 +338,49 @@ elif app_mode == "🗄️ Архив технических аудитов":
             col3.metric("Погодозависимость β₁", f"{selected_meta.beta_1:.4f}")
             col4.metric("Точность R²", f"{selected_meta.r2_score:.2%}")
             
+            st.write("##### 📊 Восстановленный графический анализ")
+            tab1, tab2 = st.tabs(["Линия регрессии Хубера", "Контрольная карта EWMA"])
+            
+            with tab1:
+                fig_h_hist = go.Figure()
+                fig_h_hist.add_trace(go.Scatter(
+                    x=df_hist['t_out'], y=df_hist['Q'], mode='markers', name='Фактические архивные показатели',
+                    hovertemplate='Т_ул: %{x}°C<br>Расход: %{y:.3f} Гкал/сут<extra></extra>'
+                ))
+                df_h_sorted = df_hist.sort_values('t_out')
+                fig_h_hist.add_trace(go.Scatter(
+                    x=df_h_sorted['t_out'], y=df_h_sorted['q_pred'], mode='lines', name='Архивная модель регрессии', line=dict(color='orange', width=2.5),
+                    hovertemplate='Ожидаемый расход: %{y:.3f} Гкал/сут<extra></extra>'
+                ))
+                fig_h_hist.update_layout(
+                    xaxis_title="Температура наружного воздуха T_ул (°C)", 
+                    yaxis_title="Расход тепловой энергии Q (Гкал/сут)", 
+                    template="plotly_white",
+                    legend=dict(title_text="Компоненты модели:")
+                )
+                st.plotly_chart(fig_h_hist, use_container_width=True)
+                
+            with tab2:
+                fig_e_hist = go.Figure()
+                fig_e_hist.add_trace(go.Scatter(
+                    x=df_hist['Date'], y=df_hist['ewma_val'], mode='lines+markers', name='Архивные значения EWMA',
+                    hovertemplate='Дата: %{x}<br>EWMA: %{y:.4f}<extra></extra>'
+                ))
+                fig_e_hist.add_trace(go.Scatter(x=df_hist['Date'], y=df_hist['ewma_ucl'], mode='lines', name='Верхняя граница контроля (UCL)', line=dict(dash='dash', color='red')))
+                fig_e_hist.add_trace(go.Scatter(x=df_hist['Date'], y=df_hist['ewma_lcl'], mode='lines', name='Нижняя граница контроля (LCL)', line=dict(dash='dash', color='red')))
+                anom_hist = df_hist[df_hist['is_anomaly']]
+                fig_e_hist.add_trace(go.Scatter(
+                    x=anom_hist['Date'], y=anom_hist['ewma_val'], mode='markers', name='🚨 Архивный технологический инцидент', marker=dict(color='crimson', size=10, symbol='x'),
+                    hovertemplate='<b>Зафиксированное отклонение</b><br>Дата: %{x}<extra></extra>'
+                ))
+                fig_e_hist.update_layout(
+                    xaxis_title="Временной интервал (Дата)", 
+                    yaxis_title="Стандартизированный показатель EWMA", 
+                    template="plotly_white",
+                    legend=dict(title_text="Параметры карты контроля:")
+                )
+                st.plotly_chart(fig_e_hist, use_container_width=True)
+
             hist_tech_summary_pdf = []
             st.write("##### 📋 Выявленные за период отклонения:")
             df_anom_only = df_hist[df_hist['is_anomaly']].copy()
@@ -324,7 +415,7 @@ elif app_mode == "🗄️ Архив технических аудитов":
 
 
 # ====================================================================
-# МОДУЛЬ 3: СРАВНЕНИЕ ОБЪЕКТОВ МКД МЕЖДУ СОБОЙ (ИСПРАВЛЕНО!)
+# МОДУЛЬ 3: СРАВНЕНИЕ ОБЪЕКТОВ МКД МЕЖДУ СОБОЙ
 # ====================================================================
 elif app_mode == "📊 Сравнение объектов МКД":
     st.title("📊 Модуль сравнительного анализа МКД")
@@ -361,13 +452,29 @@ elif app_mode == "📊 Сравнение объектов МКД":
             })
             st.table(compare_df)
             
-            # Визуализация сравнения потерь
+            # --- ГРАФИК 3: СРАВНЕНИЕ СТОЛБЦОВ (РУСИФИКАЦИЯ) ---
             fig_comp = go.Figure()
-            fig_comp.add_trace(go.Bar(name='Фоновые потери β₀', x=[meta1.file_name[:15], meta2.file_name[:15]], y=[meta1.beta_0, meta2.beta_0], marker_color='indianred'))
-            fig_comp.add_trace(go.Bar(name='Погодозависимость β₁', x=[meta1.file_name[:15], meta2.file_name[:15]], y=[meta1.beta_1, meta2.beta_1], marker_color='lightseagreen'))
+            fig_comp.add_trace(go.Bar(
+                name='Фоновые теплопотери здания β₀ (Утечки/Изоляция)', 
+                x=[meta1.file_name[:15], meta2.file_name[:15]], 
+                y=[meta1.beta_0, meta2.beta_0], marker_color='indianred',
+                hovertemplate='Здание: %{x}<br>Потери β₀: %{y:.3f} Гкал/сут<extra></extra>'
+            ))
+            fig_comp.add_trace(go.Bar(
+                name='Погодозависимость β₁ (Качество ограждающих конструкций)', 
+                x=[meta1.file_name[:15], meta2.file_name[:15]], 
+                y=[meta1.beta_1, meta2.beta_1], marker_color='lightseagreen',
+                hovertemplate='Здание: %{x}<br>Коэффициент β₁: %{y:.4f}<extra></extra>'
+            ))
             
-            # ИСПРАВЛЕНО: Заменено ошибочное bgroupmode на корректное barmode
-            fig_comp.update_layout(title="Сравнительный анализ структурных коэффициентов теплопотребления", barmode='group', template='plotly_white')
+            fig_comp.update_layout(
+                title="Сравнительный гистограммный анализ структурных коэффициентов теплопотребления", 
+                barmode='group', 
+                template='plotly_white',
+                xaxis_title="Идентификаторы исследуемых объектов (Имя файла)",
+                yaxis_title="Значения расчетных коэффициентов модели",
+                legend=dict(title_text="Анализируемые инженерные параметры:")
+            )
             st.plotly_chart(fig_comp, use_container_width=True)
             
     except Exception as ex:
@@ -413,5 +520,75 @@ elif app_mode == "🔮 Симулятор тепловых нагрузок ИТ
             
     except Exception as ex:
         st.error(f"Ошибка модуля симуляции: {str(ex)}")
+    finally:
+        session.close()
+
+
+# ====================================================================
+# МОДУЛЬ 5: КРАТКОСРОЧНЫЙ ПРОГНОЗ НА СЛЕДУЮЩИЕ СУТКИ (ARX ДИНАМИКА)
+# ====================================================================
+elif app_mode == "🔮 Краткосрочный прогноз Гкал":
+    st.title("🔮 Краткосрочное предиктивное планирование теплопотребления")
+    st.subheader("Оперативно-диспетчерский прогноз нагрузки на 24 часа с учетом тепловой инерции ограждающих конструкций")
+
+    session = Session()
+    try:
+        all_buildings = session.query(BuildingMeta).all()
+        if not all_buildings:
+            st.info("База данных архивных моделей пуста. Сначала проведите экспресс-анализ объекта в Модуле №1.")
+        else:
+            b_options = {f"ID {b.id} | {b.file_name}": b for b in all_buildings}
+            selected_key = st.selectbox("🏠 Выберите МКД для расчета суточного лимита:", list(b_options.keys()))
+            selected_meta = b_options[selected_key]
+
+            metrics_records = session.query(DailyMetrics).filter_by(building_id=selected_meta.id).order_by(DailyMetrics.date).all()
+            
+            if len(metrics_records) < 7:
+                st.warning("⚠️ Для данного объекта записано недостаточно шагов в БД. Динамический расчет инерции требует историю минимум за 7 дней.")
+            else:
+                df_hist = pd.DataFrame({
+                    "Date": [pd.to_datetime(m.date) for m in metrics_records],
+                    "t_out": [m.t_out for m in metrics_records],
+                    "Q": [m.q_fact for m in metrics_records]
+                })
+
+                last_row = df_hist.sort_values('Date').iloc[-1]
+                st.success(f"История из СУБД извлечена. Последние зафиксированные сутки: {last_row['Date'].strftime('%d.%m.%Y')}")
+
+                st.write("---")
+                st.markdown("#### 🛠️ Ввод параметров синоптического прогноза погоды")
+                
+                col_in1, col_in2, col_in3 = st.columns(3)
+                with col_in1:
+                    last_q_val = col_in1.number_input("Фактический расход за текущие сутки (Гкал/сут)", value=float(last_row['Q']), step=0.1)
+                with col_in2:
+                    last_t_val = col_in2.number_input("Средняя температура наружного воздуха сегодня (°C)", value=float(last_row['t_out']), step=0.5)
+                with col_in3:
+                    forecast_t_val = col_in3.number_input("🚨 Прогноз синоптиков на следующие 24 часа T_ул (°C)", value=float(last_row['t_out'] - 5.0), step=0.5)
+
+                if st.button("🚀 Рассчитать диспетчерский лимит Гкал"):
+                    forecaster = ShortTermHeatForecaster(cfg)
+                    
+                    with st.spinner("Адаптивное вычисление динамических параметров тепловой емкости стен МКД..."):
+                        r2_train = forecaster.fit(df_hist)
+                        q_pred_tomorrow = forecaster.predict_next_day(last_q_val, last_t_val, forecast_t_val)
+                    
+                    st.markdown("### 📊 Результаты краткосрочного прогнозирования:")
+                    
+                    col_res1, col_res2, col_res3 = st.columns(3)
+                    col_res1.metric("Необходимый отпуск тепла на завтра", f"{q_pred_tomorrow:.3f} Гкал/сут")
+                    col_res2.metric("Эквивалентная часовая нагрузка ИТП", f"{(q_pred_tomorrow/24):.4f} Гкал/ч")
+                    col_res3.metric("Точность авторегрессионной матрицы (R²)", f"{r2_train:.1%}")
+
+                    delta_t = forecast_t_val - last_t_val
+                    if delta_t < -5.0:
+                        st.warning(f"🚨 **Инженерная директива:** Ожидается резкое похолодание климатического фронта на {abs(delta_t)}°C. Вычисленный лимит в {q_pred_tomorrow:.3f} Гкал/сут учитывает температурный шок и инерцию здания. Рекомендуется превентивно повысить циркуляционный расход теплоносителя в ИТП.")
+                    elif q_pred_tomorrow > last_q_val * 1.3:
+                        st.error("⚠️ **Внимание: Риск гидравлического дефицита!** Прогнозируемое теплопотребление возрастает более чем на 30%. Проверьте уставки регулятора давления.")
+                    else:
+                        st.info("ℹ️ Прогнозные флуктуации теплопотребления укладываются в штатные графики качественного регулирования.")
+                        
+    except Exception as ex:
+        st.error(f"Ошибка предиктивного модуля: {str(ex)}")
     finally:
         session.close()
