@@ -1,0 +1,43 @@
+# heat_analysis_system/config/config.yaml
+# Конфигурация аналитического конвейера под суточные отчеты г. Абакан
+
+paths:
+  raw_dir: "data/raw"
+  processed_dir: "data/processed"
+  audit_dir: "data/audit"
+  database_uri: "sqlite:///data/heat_analysis.db"
+
+region_settings:
+  name: "Республика Хакасия (г. Абакан)"
+  t_base_room: 20.0       # Нормируемая температура внутри помещения (°C) по СП 50.13330.2012
+  t_op: 8.0               # Температура начала отопительного периода (°C)
+  fallback_weather:
+    generate_synthetic: true
+    gsop_target: 6100     # Целевой ГСОП для Хакасии
+
+validation:
+  phys_limits:
+    t_min: 30.0           # Минимальная температура для корректного учета начала/конца сезона (сентябрь)
+    t_max: 120.0          
+    p_min: 0.05           # Учтено минимальное давление из файла (0.51 бар)
+    p_max: 16.0          
+    q_min: 0.0            
+  max_missing_allowed: 0.20 # Допуск до 20% пропусков
+
+models:
+  huber:
+    initial_delta_quantile: 0.75  
+    ci_alpha: 0.05                
+
+anomaly:
+  ewma:
+    span: 7                       # Окно сглаживания (7 суток)
+    k_sigma: 3.0                  
+
+classification:
+  limits:
+    norm_low: 0.95                
+    norm_high: 1.05               
+    warn_high: 1.15               
+  expert_rules:
+    consecutive_anomalies_crit: 3
